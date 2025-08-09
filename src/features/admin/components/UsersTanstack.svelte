@@ -18,7 +18,21 @@
     role: u.role ?? (["admin", "manager", "user"] as const)[i % 3],
     status: u.status ?? (["active", "pending", "suspended"] as const)[i % 3],
   })
+
   let rows: any[] = $state(initial.map(withDefaults))
+
+  // เพิ่มการตรวจสอบข้อมูลซ้ำ
+  $effect(() => {
+    const ids = rows.map((r) => r.id)
+    const uniqueIds = new Set(ids)
+    if (ids.length !== uniqueIds.size) {
+      console.warn("🚨 Found duplicate data in rows:", {
+        total: ids.length,
+        unique: uniqueIds.size,
+        duplicates: ids.length - uniqueIds.size,
+      })
+    }
+  })
   let cursor: number | string | null = $state(nextCursor)
   let loading = $state(false)
   let prefetching = $state(false)
@@ -89,19 +103,41 @@
     if (!cursor || loading) return
     loading = true
     try {
-      const res = await fetch(`/api/members?cursor=${cursor}&limit=${limit}`)
+      // ใช้ API endpoint ใหม่
+      const res = await fetch(
+        `/admin/userstanstack/api?cursor=${cursor}&limit=${limit}`
+      )
       const data = await res.json()
-      const newRows = (data.items || []).map((u: any, i: number) =>
+
+      if (data.error) {
+        console.error("API Error:", data.error)
+        return
+      }
+
+      const newRows = (data.initial || []).map((u: any, i: number) =>
         withDefaults(u, rows.length + i)
       )
-      rows = rows.concat(newRows)
 
-      // จำกัดหน้าต่างข้อมูลในหน่วยความจำ (เช่น เก็บล่าสุด 2,000 แถว)
-      //   const maxWindow = 2000
-      //   if (!prefetchAllMode && rows.length > maxWindow)
-      //     rows = rows.slice(rows.length - maxWindow)
+      // ป้องกันข้อมูลซ้ำ โดยตรวจสอบ ID ที่มีอยู่แล้ว
+      const existingIds = new Set(rows.map((row) => row.id))
+      const uniqueNewRows = newRows.filter(
+        (row: any) => !existingIds.has(row.id)
+      )
+
+      console.log("📊 Fetch more data:", {
+        newRows: newRows.length,
+        uniqueNew: uniqueNewRows.length,
+        duplicates: newRows.length - uniqueNewRows.length,
+        totalRows: rows.length + uniqueNewRows.length,
+      })
+
+      if (uniqueNewRows.length > 0) {
+        rows = rows.concat(uniqueNewRows)
+      }
 
       cursor = data.nextCursor
+    } catch (error) {
+      console.error("Error fetching more users:", error)
     } finally {
       loading = false
     }
@@ -132,16 +168,30 @@
     try {
       while (cursor && !shouldCancelPrefetch) {
         const res: Response = await fetch(
-          `/api/members?cursor=${cursor}&limit=${limit}`
+          `/admin/userstanstack/api?cursor=${cursor}&limit=${limit}`
         )
         const data: any = await res.json()
-        const newRows = ((data.items as any[]) || []).map((u: any, i: number) =>
-          withDefaults(u, rows.length + i)
+
+        if (data.error) {
+          console.error("API Error:", data.error)
+          break
+        }
+
+        const newRows = ((data.initial as any[]) || []).map(
+          (u: any, i: number) => withDefaults(u, rows.length + i)
         )
-        rows = rows.concat(newRows)
+
+        // ป้องกันข้อมูลซ้ำ
+        const existingIds = new Set(rows.map((row) => row.id))
+        const uniqueNewRows = newRows.filter((row) => !existingIds.has(row.id))
+
+        if (uniqueNewRows.length > 0) {
+          rows = rows.concat(uniqueNewRows)
+        }
+
         cursor = data.nextCursor
         prefetchLoaded = rows.length
-        await new Promise((r) => setTimeout(r, 0))
+        await new Promise((r) => setTimeout(r, 100)) // เพิ่ม delay เล็กน้อย
       }
     } finally {
       prefetching = false
